@@ -1,0 +1,81 @@
+# appspec.yml — Blue/Green EC2 deployment
+#
+# BLUE/GREEN HOOK ORDER (EC2 with ALB):
+#
+#  ── On BLUE instances (before traffic shift) ──────────────────────────────
+#  BeforeBlockTraffic   → run tasks before ALB deregisters blue instances
+#  [BlockTraffic]       → CodeDeploy deregisters blue from ALB (no script)
+#  AfterBlockTraffic    → run tasks after blue is deregistered
+#
+#  ── On GREEN instances (new instances) ────────────────────────────────────
+#  ApplicationStop      → (usually skipped on fresh instances)
+#  BeforeInstall        → pre-install setup on green instances
+#  [Install]            → CodeDeploy copies files (no script)
+#  AfterInstall         → post-install config on green instances
+#  ApplicationStart     → start app on green instances
+#  ValidateService      → smoke test green instances
+#
+#  ── Traffic shift ─────────────────────────────────────────────────────────
+#  BeforeAllowTraffic   → run tasks before ALB registers green instances
+#  [AllowTraffic]       → CodeDeploy registers green with ALB (no script)
+#  AfterAllowTraffic    → run tasks after green is registered and healthy
+#
+#  ── Blue termination ──────────────────────────────────────────────────────
+#  Blue instances are terminated after the configured wait time
+
+version: 0.0
+os: linux
+
+files:
+  - source: /app
+    destination: /var/www/my-app
+
+hooks:
+  BeforeBlockTraffic:
+    - location: scripts/before_block_traffic.sh
+      timeout: 30
+      runas: root
+
+  AfterBlockTraffic:
+    - location: scripts/after_block_traffic.sh
+      timeout: 30
+      runas: root
+
+  # Runs on the instance BEFORE the new revision files are copied.
+  # On blue instances: stops the old running app so files can be overwritten.
+  # On green instances (first deploy): app is not running yet, script handles
+  # that gracefully with an "nothing to stop" path.
+  ApplicationStop:
+    - location: scripts/stop_app.sh
+      timeout: 30
+      runas: root
+
+  BeforeInstall:
+    - location: scripts/before_install.sh
+      timeout: 60
+      runas: root
+
+  AfterInstall:
+    - location: scripts/after_install.sh
+      timeout: 60
+      runas: root
+
+  ApplicationStart:
+    - location: scripts/start_app.sh
+      timeout: 30
+      runas: root
+
+  ValidateService:
+    - location: scripts/validate.sh
+      timeout: 60
+      runas: root
+
+  BeforeAllowTraffic:
+    - location: scripts/before_allow_traffic.sh
+      timeout: 30
+      runas: root
+
+  AfterAllowTraffic:
+    - location: scripts/after_allow_traffic.sh
+      timeout: 30
+      runas: root
