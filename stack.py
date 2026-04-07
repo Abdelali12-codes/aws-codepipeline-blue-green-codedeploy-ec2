@@ -243,11 +243,10 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
         cdk.CfnOutput(self, "ListenerArn", value=listener.listener_arn)
 
         # ── Artifact bucket ─────────────────────────────────────────────
-        artifact_bucket = s3.Bucket(
-            self, "ArtifactBucket",
-            removal_policy=cdk.RemovalPolicy.DESTROY,
-            auto_delete_objects=True,
-            versioned=True,
+        # ── Artifact bucket ─────────────────────────────────────────────
+        artifact_bucket_name = self.node.get_context("artifact_bucket_name")
+        artifact_bucket = s3.Bucket.from_bucket_name(
+            self, "ArtifactBucket", artifact_bucket_name
         )
 
         # ── CodeBuild — packages app/ + appspec.yml + scripts/ ──────────
@@ -318,7 +317,7 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
         # Build:  CodeBuild packages the deployment artifact
         # Deploy: CodeDeploy blue/green — provisions new green EC2 instances,
         #         deploys revision, shifts ALB traffic, terminates blue
-        codepipeline.CfnPipeline(
+        pipeline=codepipeline.CfnPipeline(
             self, "Pipeline",
             name="bg-ec2-pipeline",
             role_arn=pipeline_role.role_arn,
@@ -412,3 +411,53 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
                 ),
             ],
         )
+
+        # ── CfnWebhook ───────────────────────────────────────────────
+        # A webhook registers a URL with GitHub so that on every push to
+        # the configured branch, GitHub sends an HTTP POST to CodePipeline.
+        # CodePipeline verifies the request using a secret token (stored in
+        # Secrets Manager) and starts a pipeline execution immediately.
+        #
+        # PollForSourceChanges: False in the Source action is REQUIRED when
+        # using a webhook — otherwise CodePipeline polls every minute AND
+        # the webhook triggers it, causing duplicate executions.
+        #
+        # authentication: GITHUB_HMAC
+        #   GitHub signs every webhook payload with HMAC-SHA1 using the
+        #   secret token. CodePipeline verifies the signature before
+        #   starting the pipeline — prevents unauthorized triggers.
+        #
+        # filters: push events on the target branch only.
+        #   JsonPath  → selects the field from the GitHub webhook payload
+        #   MatchEquals → value that field must equal to trigger the pipeline
+        webhook_secret = cdk.SecretValue.secrets_manager("github-access-token")
+
+        codepipeline.CfnWebhook(
+            self, "PipelineWebhook",
+            name="ec2-pipeline-webhook",
+            # GITHUB_HMAC: GitHub signs the payload; CodePipeline verifies
+            # the signature using the shared secret before accepting the event
+            authentication="GITHUB_HMAC",
+            authentication_configuration=codepipeline.CfnWebhook.WebhookAuthConfigurationProperty(
+                secret_token=webhook_secret.unsafe_unwrap(),
+            ),
+            # Which pipeline and stage/action to trigger
+            target_pipeline=pipeline.ref,
+            target_pipeline_version=1,
+            target_action="GitHub_Source",
+            # Register the webhook URL with GitHub automatically
+            register_with_third_party=True,
+            filters=[
+                # Trigger only on push events to the target branch
+                codepipeline.CfnWebhook.WebhookFilterRuleProperty(
+                    # $.ref is the GitHub push event field containing the branch
+                    # e.g. "refs/heads/master"
+                    json_path="$.ref",
+                    match_equals="refs/heads/master",
+                ),
+            ],
+        )
+
+        cdk.CfnOutput(self, "WebhookUrl", value="See AWS Console → CodePipeline → ec2-pipeline → Settings → Webhook")
+
+

@@ -5,7 +5,6 @@ app = Flask(__name__)
 
 DRAINING_FLAG = "/var/www/my-app/draining"
 
-
 @app.route("/")
 def home():
     return jsonify({"version": "v1", "env": "blue"})
