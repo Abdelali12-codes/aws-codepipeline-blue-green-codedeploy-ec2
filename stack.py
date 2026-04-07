@@ -34,7 +34,18 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
     def __init__(self, scope: Construct, id: str, **kwargs):
         super().__init__(scope, id, **kwargs)
 
-        vpc = ec2.Vpc(self, "Vpc", max_azs=2, nat_gateways=1)
+        vpc = ec2.Vpc(
+            self, "Vpc",
+            max_azs=2,
+            nat_gateways=0,
+            subnet_configuration=[
+                ec2.SubnetConfiguration(
+                    name="Public",
+                    subnet_type=ec2.SubnetType.PUBLIC,
+                    cidr_mask=24,
+                )
+            ],
+        )
 
         instance_role = iam.Role(
             self, "InstanceRole",
@@ -64,17 +75,23 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
         sg.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(8080))
 
         # Blue ASG — original instances (CodeDeploy will clone this for green)
-        blue_asg = autoscaling.AutoScalingGroup(
-            self, "BlueAsg",
-            vpc=vpc,
+        launch_template = ec2.LaunchTemplate(
+            self, "LaunchTemplate",
             instance_type=ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
             machine_image=ec2.MachineImage.from_ssm_parameter(
-                # Latest Ubuntu 22.04 LTS AMI via SSM parameter
                 "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
             ),
             role=instance_role,
             user_data=user_data,
             security_group=sg,
+            associate_public_ip_address=True,
+        )
+
+        blue_asg = autoscaling.AutoScalingGroup(
+            self, "BlueAsg",
+            vpc=vpc,
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
+            launch_template=launch_template,
             min_capacity=2,
             max_capacity=4,
             desired_capacity=2,
@@ -117,7 +134,7 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
             assumed_by=iam.ServicePrincipal("codedeploy.amazonaws.com"),
             managed_policies=[
                 iam.ManagedPolicy.from_aws_managed_policy_name(
-                    "AWSCodeDeployRole"
+                    "service-role/AWSCodeDeployRole"
                 ),
             ],
         )
@@ -195,17 +212,24 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
                     codedeploy.CfnDeploymentGroup.TargetGroupPairInfoProperty(
                         target_groups=[
                             codedeploy.CfnDeploymentGroup.TargetGroupInfoProperty(
-                                name=blue_tg.target_group_name,  # blue = current
+                                name=blue_tg.target_group_name,
                             ),
                             codedeploy.CfnDeploymentGroup.TargetGroupInfoProperty(
-                                name=green_tg.target_group_name,  # green = new
+                                name=green_tg.target_group_name,
                             ),
                         ],
                         prod_traffic_route=codedeploy.CfnDeploymentGroup.TrafficRouteProperty(
                             listener_arns=[listener.listener_arn],
                         ),
                     )
-                ]
+                ],
+                # targetGroupInfoList is required alongside targetGroupPairInfoList
+                # for WITH_TRAFFIC_CONTROL deployments
+                target_group_info_list=[
+                    codedeploy.CfnDeploymentGroup.TargetGroupInfoProperty(
+                        name=blue_tg.target_group_name,
+                    ),
+                ],
             ),
             auto_rollback_configuration=codedeploy.CfnDeploymentGroup.AutoRollbackConfigurationProperty(
                 enabled=True,
@@ -254,12 +278,18 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
                     "phases:",
                     "  build:",
                     "    commands:",
-                    "      - echo Build started",
+                    "      - echo Building application...",
                     "artifacts:",
                     "  files:",
                     "    - appspec.yml",
                     "    - scripts/**/*",
                     "    - app/**/*",
+                    "  exclude-paths:",
+                    "    - stack.py",
+                    "    - app.py",
+                    "    - cdk.json",
+                    "    - cdk.out/**/*",
+                    "    - requirements.txt",
                 ]),
             ),
         )
@@ -317,7 +347,7 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
                             ],
                             configuration={
                                 "Owner": "Abdelali12-codes",
-                                "Repo": "aws-codedeploy-sample",
+                                "Repo": "aws-codepipeline-blue-green-codedeploy-ec2",
                                 "Branch": "master",
                                 "OAuthToken": cdk.SecretValue.secrets_manager("github-access-token").unsafe_unwrap(),
                                 "PollForSourceChanges": False,
