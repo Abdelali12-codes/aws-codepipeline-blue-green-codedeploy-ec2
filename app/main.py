@@ -7,7 +7,7 @@ DRAINING_FLAG = "/var/www/my-app/draining"
 
 @app.route("/")
 def home():
-    return jsonify({"version": "v1", "env": "blue"})
+    return jsonify({"version": "v1", "env": "green"})
 
 
 @app.route("/health")

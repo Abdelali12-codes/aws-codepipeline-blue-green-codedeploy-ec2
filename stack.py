@@ -137,6 +137,18 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
                     "service-role/AWSCodeDeployRole"
                 ),
             ],
+            inline_policies= {
+                "CodeDeployAutoscaling": iam.PolicyDocument(
+                    statements=[
+                        iam.PolicyStatement(
+                            actions=["ec2:RunInstances",
+                            "ec2:CreateTags",
+                            "iam:PassRole"],
+                            resources=["*"],
+                        )
+                    ]
+                )
+            }
         )
 
         # L1 CfnDeploymentGroup — required because the L2 ServerDeploymentGroup
@@ -248,13 +260,14 @@ class BlueGreenEC2CodeDeployStack(cdk.Stack):
         artifact_bucket = s3.Bucket.from_bucket_name(
             self, "ArtifactBucket", artifact_bucket_name
         )
-
+        artifact_bucket.grant_read(instance_role)
         # ── CodeBuild — packages app/ + appspec.yml + scripts/ ──────────
         build_role = iam.Role(
             self, "BuildRole",
             assumed_by=iam.ServicePrincipal("codebuild.amazonaws.com"),
         )
         artifact_bucket.grant_read_write(build_role)
+        # artifact_bucket.grant_read_write(deployment_group.role)
         build_role.add_to_policy(iam.PolicyStatement(
             actions=["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
             resources=["*"],
